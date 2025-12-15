@@ -2,11 +2,13 @@ package com.and
 
 import com.google.gson.JsonParser
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -61,52 +63,50 @@ class WarningCrawling(private val recognizedTexts: MutableList<String>) {
 
     fun getWarningDrug() {
         val jobs = mutableListOf<Job>()
-        val parentJob = SupervisorJob()
-        CoroutineScope(Dispatchers.IO + parentJob).launch {
+
+        val errorHandler = CoroutineExceptionHandler { _, exception ->
+            onSuccessListener?.onSuccessGetData(false, productList, responseList)
+        }
+
+        CoroutineScope(Dispatchers.IO + errorHandler).launch {
             productList.forEach { productName ->
                 responseList[productName] = mutableListOf()
+
                 jobs += launch {
-                    try {
-                        for (page in 1..8) {
-                            val response = service.getUsjntTabooInfoList(
-                                serviceKey = apiKey,
-                                pageNo = page,
-                                numOfRows = 100,
-                                type = "json",
-                                typeName = "병용금기",
-                                itemName = productName
-                            ).execute()
+                    for (page in 1..8) {
+                        val response = service.getUsjntTabooInfoList(
+                            serviceKey = apiKey,
+                            pageNo = page,
+                            numOfRows = 100,
+                            type = "json",
+                            typeName = "병용금기",
+                            itemName = productName
+                        ).execute()
 
-                            if (response.isSuccessful) {
-                                val responseBody = response.body()?.string()
-                                val continueProcessing = parseAndAddProductNames(responseBody, productName)
-                                response.body()?.close()
+                        if (response.isSuccessful) {
+                            val responseBody = response.body()?.string()
+                            val continueProcessing = parseAndAddProductNames(responseBody, productName)
+                            response.body()?.close()
 
-                                if (!continueProcessing) {
-                                    break
-                                }
-                            }
+                            if (!continueProcessing) break
                         }
-                    } catch (e: Exception) {
-                        parentJob.cancel(CancellationException("예외가 발생하여 모든 작업을 취소합니다", e))
                     }
                 }
             }
 
-            try {
-                jobs.joinAll()
+            jobs.joinAll()
+
+            if (isActive) {
                 withContext(Dispatchers.Main) {
                     onSuccessListener?.onSuccessGetData(true, productList, responseList)
                 }
-            } catch (e: CancellationException) {
-                onSuccessListener?.onSuccessGetData(false, productList, responseList)
             }
         }
     }
 
     private suspend fun parseAndAddProductNames(responseBody: String?, productName: String): Boolean {
         responseBody?.let {
-            val jsonObject = JsonParser.parseString(responseBody).asJsonObject
+            val jsonObject = JsonParser.parseString(it).asJsonObject
             val bodyObject = jsonObject.getAsJsonObject("body")
             val items = bodyObject.getAsJsonArray("items")
 
